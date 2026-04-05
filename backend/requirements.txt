@@ -1,6 +1,27 @@
-fastapi
-uvicorn
-ortools
-torch
-pandas
-requests
+# APEX — Production Requirements
+# Python 3.10+
+
+# ML / Data
+torch>=2.1.0
+numpy>=1.26.0
+pandas>=2.1.0
+scikit-learn>=1.3.0
+joblib>=1.3.0
+filterpy>=1.4.5
+
+# Optimization
+ortools>=9.7.2996
+
+# API
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.4.0
+
+# Data fetching (for real datasets)
+requests>=2.31.0
+openpyxl>=3.1.0
+entsoe-py>=0.6.0
+
+# Testing
+pytest>=7.4.0
+httpx>=0.25.0

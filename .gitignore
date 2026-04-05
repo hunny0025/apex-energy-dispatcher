@@ -1,43 +1,24 @@
-# Python
+# Python cache
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-venv/
+*.pyc
+
+# Environment and logs
 .env
+logs/
+audit/apex_audit.jsonl
 
-# Models
-backend/models/*.pth
-backend/models/*.pkl
-
-# JS / Node
+# Build and dependencies
 node_modules/
 dist/
-dist-ssr
-*.local
+build/
+
+# ML models and large data
+models/*.pt
+models/*.joblib
+data/
+
+# OS/IDE specific
 .vscode/
-
-# Data
-data/*.csv
-!data/dataset.csv
-
-# Logs
-*.log
+.idea/
+.DS_Store
+Thumbs.db

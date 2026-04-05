@@ -1,0 +1,37 @@
+{
+  "epochs_trained": 50,
+  "final_train_loss": 0.7544734747442481,
+  "final_val_loss": 0.36430746543813836,
+  "validation_metrics": {
+    "mae_p50_mw": 0.8071,
+    "rmse_p50_mw": 3.1258,
+    "p90_coverage": 0.9317,
+    "p90_calibrated": 0.0
+  },
+  "train_samples": 28004,
+  "val_samples": 6988,
+  "n_features": 20,
+  "seq_len": 16,
+  "feature_columns": [
+    "load_mw",
+    "res_output_mw",
+    "grid_supply_mw",
+    "load_mean_1h",
+    "load_std_1h",
+    "load_mean_4h",
+    "deficit_mean_1h",
+    "deficit_std_1h",
+    "load_lag1",
+    "load_lag4",
+    "load_lag16",
+    "deficit_lag1",
+    "deficit_lag4",
+    "irradiance_wm2",
+    "wind_speed_ms",
+    "storm_flag",
+    "hour_sin",
+    "hour_cos",
+    "dow_sin",
+    "dow_cos"
+  ]
+}
