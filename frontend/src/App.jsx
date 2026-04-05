@@ -1,495 +1,494 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { 
-  LineChart, Line, AreaChart, Area, BarChart, Bar,
-  ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
-} from 'recharts';
+import { useState, useEffect, useRef, useCallback } from "react";
+import {
+  AreaChart, Area, LineChart, Line, BarChart, Bar,
+  ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, ReferenceLine, Cell
+} from "recharts";
 
-const COLORS = {
-  bg: '#07090f', panel: '#0d1117', card: '#111827', border: '#1e2d3d',
-  green: '#00d97e', yellow: '#f5a623', red: '#ff4d4d', blue: '#3b82f6',
-  teal: '#06b6d4', text: '#e2e8f0', muted: '#64748b'
+const C = {
+  bg: "#040810", bg1: "#070d18", bg2: "#0a1220", bg3: "#0e1829",
+  border: "#112240", border2: "#1a3355",
+  green: "#00ff88", greenD: "#00ff8820",
+  teal: "#00d4ff", tealD: "#00d4ff18",
+  amber: "#ffb800", amberD: "#ffb80018",
+  red: "#ff3366", redD: "#ff336620",
+  purple: "#8b5cf6", purpleD: "#8b5cf618",
+  blue: "#3b82f6", blueD: "#3b82f618",
+  text: "#cdd9e5", textDim: "#5d7a9a", textBright: "#e8f4ff"
 };
 
-const Header = ({ time }) => (
-  <div className="flex justify-between items-center px-6 py-3 border-b z-10 relative" style={{ backgroundColor: COLORS.bg, borderColor: COLORS.border }}>
-    <div className="flex items-center gap-3">
-      <span className="font-mono font-bold text-xl tracking-wide text-white">APEX</span>
-      <span className="text-[10px] uppercase tracking-[0.2em] px-2 py-0.5 rounded border" style={{ backgroundColor: COLORS.panel, color: COLORS.muted, borderColor: COLORS.border }}>
-        AI Energy Dispatcher
-      </span>
-    </div>
-    <div className="font-mono text-sm tracking-wider" style={{ color: COLORS.text }}>
-      {time.toLocaleTimeString('en-US', { hour12: false })}
-    </div>
-    <div className="flex items-center space-x-4">
-      <div className="flex items-center">
-        <div className="w-2 h-2 rounded-full animate-pulse mr-2 bg-[#00d97e]"></div>
-        <span className="text-xs font-bold tracking-wider text-[#00d97e]">LIVE SYS</span>
-      </div>
-      <div className="text-xs px-2 py-1 rounded font-mono border" style={{ backgroundColor: COLORS.panel, color: COLORS.teal, borderColor: COLORS.border }}>
-        ~60 ms
-      </div>
-    </div>
+const HISTORY = 60;
+let tickCount = 0;
+
+function generateTick(scenario, beta) {
+  tickCount++;
+  const t = tickCount, h = (t * 0.05) % 24;
+  const sc = {
+    normal: { rf: 1, lf: 1, wNoise: .88 },
+    res_drop: { rf: .38, lf: 1, wNoise: .7 }, 
+    demand_spike: { rf: 1, lf: 1.25, wNoise: .85 },
+    storm: { rf: .3, lf: 1.1, wNoise: .62 },
+    night_low: { rf: .05, lf: .75, wNoise: .95 }
+  }[scenario] || { rf: 1, lf: 1, wNoise: .88 };
+
+  const baseLoad = 448 + 38 * Math.sin(2 * Math.PI * (h - 8) / 24) + (Math.random() - .5) * 14;
+  const load = Math.max(300, baseLoad * sc.lf);
+  const solarPeak = Math.max(0, Math.sin(Math.PI * (h - 6) / 12));
+  const solar = 98 * solarPeak * (.65 + Math.random() * .35) * sc.rf;
+  const wind = Math.max(0, 52 + (Math.random() - .5) * 28) * sc.rf;
+  const renewable = solar + wind;
+  const gridCap = 350;
+  const gridSupply = Math.min(gridCap, Math.max(0, load - renewable));
+  const deficit = Math.max(0, load - renewable - gridSupply);
+
+  const w = Math.max(.4, sc.wNoise + (Math.random() - .5) * .06);
+  const p50 = deficit * (1 + (Math.random() - .5) * .08);
+  const p90 = p50 * (1.14 + (1 - w) * .22);
+  const spread = p90 - p50;
+  
+  const eff = p90;
+  let rem = eff;
+
+  const hvacMax = 20, pumpMax = 30, rollingMax = 40;
+  let hvac = 0, pump = 0, rolling = 0, diesel = 0;
+
+  if (rem > 0) { hvac = Math.min(rem, hvacMax); rem -= hvac; }
+  if (rem > 0) { pump = Math.min(rem, pumpMax); rem -= pump; }
+  if (rem > 0) { rolling = Math.min(rem, rollingMax); rem -= rolling; }
+  if (rem > 0) { diesel = rem; rem -= diesel; }
+
+  const hCost = hvac * (3000 / 20);
+  const pCost = pump * (5000 / 30);
+  const rCost = rolling * (15000 / 40);
+  const dFuel = diesel * 150;
+  const risk = (1 - w) * 0.1 * eff * 150;
+
+  const opCost = dFuel + hCost + pCost + rCost + risk;
+  const co2 = diesel * 0.9;
+  const esgPenalty = co2 * 90;
+  const totalLoss = opCost + (beta * esgPenalty);
+
+  const base = eff * 150;
+  const freq = 50 + (Math.random() - .5) * .8 - deficit * .01;
+  const riskLvl = deficit > 60 ? "HIGH" : deficit > 20 ? "MED" : "LOW";
+  
+  let explainer = "All systems functioning normally.";
+  if (deficit > 0) {
+    if (diesel > 0) explainer = `High deficit requires DIESEL (${diesel.toFixed(1)} MW). Limits reached.`;
+    else if (rolling > 0) explainer = `ROLLING MILL shutdown triggered after HVAC & PUMP tier.`;
+    else explainer = `Deficit handled via HVAC/PUMP tier shedding.`;
+  }
+
+  return {
+    t, ts: new Date().toLocaleTimeString("en", { hour12: false }),
+    load: +load.toFixed(1), solar: +solar.toFixed(1), wind: +wind.toFixed(1),
+    renewable: +renewable.toFixed(1), gridSupply: +gridSupply.toFixed(1),
+    deficit: +deficit.toFixed(1), p50: +p50.toFixed(1), p90: +p90.toFixed(1), spread: +spread.toFixed(1),
+    w: +w.toFixed(3), diesel: +diesel.toFixed(1), hvac: +hvac.toFixed(1), pump: +pump.toFixed(1), rolling: +rolling.toFixed(1),
+    hvacMax, pumpMax, rollingMax,
+    dFuel: +dFuel.toFixed(0), hCost: +hCost.toFixed(0), pCost: +pCost.toFixed(0), rCost: +rCost.toFixed(0),
+    sheddingCost: +(hCost + pCost + rCost).toFixed(0), risk: +risk.toFixed(0),
+    opCost: +opCost.toFixed(0), co2: +co2.toFixed(1), esgPenalty: +esgPenalty.toFixed(0),
+    totalLoss: +totalLoss.toFixed(0), base: +base.toFixed(0),
+    explainer,
+    savings: +(((base - opCost) / Math.max(base, 1)) * 100).toFixed(1),
+    freq: +freq.toFixed(3), riskLvl, phase: scenario === 'res_drop' || scenario === 'storm' ? 2 : 1,
+    latencyLstm: +(12 + Math.random() * 8).toFixed(1), latencyMilp: +(8 + Math.random() * 12).toFixed(1)
+  };
+}
+
+const Blink = ({ active, color }) => (
+  <span style={{
+    display: "inline-block", width: 7, height: 7, borderRadius: "50%",
+    background: active ? color : C.textDim, boxShadow: active ? `0 0 8px ${color}` : "none",
+    animation: active ? "pulse 1.4s ease-in-out infinite" : "none"
+  }} />
+);
+
+const Badge = ({ label, color, dim }) => (
+  <span style={{
+    fontSize: 9, fontFamily: "monospace", letterSpacing: 1, padding: "2px 6px",
+    borderRadius: 3, border: `1px solid ${color}44`, background: dim || `${color}15`,
+    color, fontWeight: 700
+  }}>{label}</span>
+);
+
+const Metric = ({ label, value, unit, color, size = 22, sub }) => (
+  <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+    <span style={{ fontSize: 9, color: C.textDim, fontFamily: "monospace", letterSpacing: 1 }}>{label}</span>
+    <span style={{ fontSize: size, fontWeight: 700, color: color || C.textBright, fontFamily: "monospace", lineHeight: 1 }}>
+      {value}<span style={{ fontSize: size * .45, color: C.textDim, marginLeft: 2 }}>{unit}</span>
+    </span>
+    {sub && <span style={{ fontSize: 9, color: C.textDim }}>{sub}</span>}
   </div>
 );
 
-const AlertBanner = ({ show, message }) => {
-  if (!show) return null;
+const Panel = ({ title, badge, children, style, accent }) => (
+  <div style={{
+    background: C.bg2, border: `1px solid ${C.border}`, borderTop: `2px solid ${accent || C.border2}`,
+    borderRadius: 4, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8, overflow: "hidden", ...style
+  }}>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <span style={{ fontSize: 9, color: C.textDim, fontFamily: "monospace", letterSpacing: 2, fontWeight: 700 }}>{title}</span>
+      {badge}
+    </div>
+    {children}
+  </div>
+);
+
+const TT = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null;
   return (
-    <div className="w-full bg-[#ff4d4d]/10 border-b border-[#ff4d4d] text-[#ff4d4d] px-6 py-2 text-xs font-bold uppercase tracking-wider flex justify-between items-center animate-pulse z-20 relative">
-      <span>⚠ ALERT TRIGGERED</span>
-      <span>{message}</span>
+    <div style={{ background: "#050c18ee", border: `1px solid ${C.border2}`, borderRadius: 4, padding: "8px 12px", fontFamily: "monospace", fontSize: 11, zIndex: 100 }}>
+      <div style={{ color: C.textDim, marginBottom: 4 }}>{label}</div>
+      {payload.map((p, i) => (
+        <div key={i} style={{ color: p.color || C.text, display: "flex", gap: 8, justifyContent: "space-between" }}>
+          <span>{p.name}</span><span style={{ fontWeight: 700 }}>{typeof p.value === "number" ? p.value.toFixed(1) : p.value}</span>
+        </div>
+      ))}
     </div>
   );
 };
 
-const MetricCard = ({ title, value, color, unit, subtext, highlight = false }) => (
-  <div style={{ backgroundColor: highlight ? COLORS.card : COLORS.panel, borderColor: highlight ? COLORS.red : COLORS.border }} 
-       className={`p-4 flex flex-col justify-between border ${highlight ? 'border-t-2' : ''} rounded-sm`}>
-    <div className="text-[10px] font-bold mb-3 uppercase tracking-wider" style={{ color: COLORS.muted }}>{title}</div>
-    <div className="flex justify-between items-end h-full">
-      <div className="flex flex-col">
-        {subtext && <span className="text-[10px] uppercase font-bold mb-1 tracking-wider" style={{ color: COLORS.text }}>{subtext}</span>}
-        <span className="font-mono font-semibold" style={{ color, fontSize: '1.5rem' }}>
-          {typeof value === 'number' ? value.toLocaleString(undefined, { maximumFractionDigits: 1 }) : value}
-          {unit && <span className="text-xs ml-1 font-sans font-normal" style={{ color: COLORS.muted }}>{unit}</span>}
-        </span>
-      </div>
-    </div>
-  </div>
-);
-
-const CustomTooltip = ({ active, payload }) => {
-  if (active && payload && payload.length) {
-    return (
-       <div className="p-3 border rounded shadow-xl text-xs font-mono z-50 relative" style={{ backgroundColor: COLORS.card, borderColor: COLORS.border }}>
-         <div className="mb-2 font-bold" style={{ color: COLORS.text }}>{payload[0].payload.timeStr || ''}</div>
-         {payload.map((entry, idx) => (
-            <div key={idx} style={{ color: entry.color || entry.fill }} className="my-0.5">
-              {entry.name}: {entry.value?.toFixed ? entry.value.toFixed(1) : entry.value}
-            </div>
-         ))}
-       </div>
-    );
-  }
-  return null;
-};
-
-// --- VIEWS ---
-
-const OverviewTab = ({ history, current }) => (
-  <div className="flex flex-col h-full overflow-y-auto no-scrollbar p-6 space-y-6">
-    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-      <MetricCard title="PLANT STATE" value={current.plant?.load} color={COLORS.blue} unit="MW" subtext="CURRENT LOAD" />
-      <MetricCard title="RENEWABLE GEN" value={current.plant?.renewable} color={COLORS.green} unit="MW" subtext="SOLAR + WIND" />
-      <MetricCard title="GRID IMPORT" value={current.plant?.grid} color={COLORS.yellow} unit="MW" subtext="LIMIT: 350 MW" />
-      <MetricCard title="DEFICIT RISK" value={current.risk?.gap} color={current.risk?.gap > 0 ? COLORS.red : COLORS.teal} highlight={current.risk?.gap > 0} unit="MW" subtext={current.risk?.level} />
-    </div>
-
-    <div className="flex-1 border flex flex-col rounded-sm min-h-[300px]" style={{ backgroundColor: COLORS.panel, borderColor: COLORS.border }}>
-       <div className="p-4 border-b flex justify-between items-center" style={{ borderColor: COLORS.border }}>
-         <span className="text-xs font-bold uppercase tracking-wider" style={{ color: COLORS.text }}>Power Flow Overview</span>
-         <div className="flex gap-4 text-xs font-mono">
-           <span style={{ color: COLORS.blue }}>● Load</span>
-           <span style={{ color: COLORS.green }}>● Renewables</span>
-           <span style={{ color: COLORS.yellow }}>● Grid Import</span>
-           <span style={{ color: COLORS.red }}>■ Deficit</span>
-         </div>
-       </div>
-       <div className="flex-1 p-4">
-         <ResponsiveContainer width="100%" height="100%">
-           <AreaChart data={history} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-             <CartesianGrid strokeDasharray="2 2" stroke={COLORS.border} vertical={false} />
-             <XAxis dataKey="timeStr" stroke={COLORS.muted} tick={{fontSize: 10, fontFamily: 'Space Mono'}} minTickGap={30} />
-             <YAxis stroke={COLORS.muted} tick={{fontSize: 10, fontFamily: 'Space Mono'}} />
-             <Tooltip content={<CustomTooltip />} />
-             <Area type="monotone" dataKey="flatRenewable" stroke={COLORS.green} fill={COLORS.green} fillOpacity={0.1} isAnimationActive={false} name="Renewables" />
-             <Line type="monotone" dataKey="flatLoad" stroke={COLORS.blue} strokeWidth={2} dot={false} isAnimationActive={false} name="Load" />
-             <Line type="monotone" dataKey="flatGrid" stroke={COLORS.yellow} strokeWidth={2} dot={false} isAnimationActive={false} name="Grid" />
-             <Line type="stepAfter" dataKey="flatDeficit" stroke={COLORS.red} strokeWidth={2} strokeDasharray="3 3" dot={false} isAnimationActive={false} name="Deficit" />
-           </AreaChart>
-         </ResponsiveContainer>
-       </div>
-    </div>
-  </div>
-);
-
-const ForecastTab = ({ history, current, scenario, setScenario, beta, setBeta }) => (
-  <div className="flex flex-col h-full overflow-y-auto no-scrollbar p-6 space-y-6">
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <MetricCard title="P50 EXPECTATION" value={current.forecast?.p50} color={COLORS.teal} unit="MW" subtext="NOMINAL EXPECTED" />
-      <MetricCard title="P90 RISK BAND" value={current.forecast?.p90} color={COLORS.yellow} unit="MW" highlight subtext={`WORST CASE (+${current.risk?.gap?.toFixed(1)} MW)`} />
-      <MetricCard title="SENSOR CONFIDENCE" value={(current.forecast?.confidence || 0) * 100} color={current.forecast?.confidence > 0.8 ? COLORS.green : COLORS.red} unit="%" subtext="W-SCORE" />
-    </div>
-
-    <div className="flex gap-6 min-h-[300px]">
-       <div className="w-2/3 border rounded-sm flex flex-col" style={{ backgroundColor: COLORS.panel, borderColor: COLORS.border }}>
-         <div className="p-4 border-b text-xs font-bold uppercase tracking-wider" style={{ borderColor: COLORS.border, color: COLORS.text }}>Probability Forecast Bands</div>
-         <div className="flex-1 p-4">
-            <ResponsiveContainer width="100%" height="100%">
-               <AreaChart data={history} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                 <CartesianGrid strokeDasharray="2 2" stroke={COLORS.border} vertical={false} />
-                 <XAxis dataKey="timeStr" stroke={COLORS.muted} tick={{fontSize: 10, fontFamily: 'Space Mono'}} minTickGap={30} />
-                 <YAxis stroke={COLORS.muted} tick={{fontSize: 10, fontFamily: 'Space Mono'}} />
-                 <Tooltip content={<CustomTooltip />} />
-                 <Area type="monotone" dataKey="flatP90" stroke={COLORS.yellow} strokeWidth={1} strokeDasharray="3 3" fill={COLORS.yellow} fillOpacity={0.15} name="P90 Risk" isAnimationActive={false} />
-                 <Line type="monotone" dataKey="flatP50" stroke={COLORS.teal} strokeWidth={2} dot={false} name="P50 Expected" isAnimationActive={false} />
-               </AreaChart>
-            </ResponsiveContainer>
-         </div>
-       </div>
-       
-       <div className="w-1/3 flex flex-col gap-4">
-          <div className="border rounded-sm flex flex-col p-4 w-full flex-1" style={{ backgroundColor: COLORS.card, borderColor: COLORS.border }}>
-             <div className="flex items-center justify-between mb-4">
-               <div className="text-xs font-bold uppercase tracking-wider" style={{ color: COLORS.text }}>System Control / Variables</div>
-             </div>
-             <p className="text-[10px] leading-relaxed mb-4" style={{ color: COLORS.muted }}>Select scenario datasets to observe how the AI bounds grid instability risks.</p>
-             <div className="flex flex-col gap-2">
-                {['normal', 'renewable_drop', 'demand_spike'].map(s => (
-                   <button key={s} onClick={() => setScenario(s)}
-                           className="flex items-center justify-between px-4 py-3 border transition-colors font-mono text-[10px] uppercase w-full text-left"
-                           style={{
-                              borderColor: scenario === s ? COLORS.teal : COLORS.border,
-                              backgroundColor: scenario === s ? COLORS.panel : 'transparent',
-                              color: scenario === s ? COLORS.text : COLORS.muted,
-                              borderLeftWidth: scenario === s ? '4px' : '1px'
-                           }}>
-                     <span>{s.replace('_', ' ')}</span>
-                     {scenario === s && <span className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS.teal }}></span>}
-                   </button>
-                ))}
-             </div>
-             
-             <div className="mt-8 pt-4 border-t" style={{ borderColor: COLORS.border }}>
-               <div className="text-[10px] font-bold uppercase tracking-wider mb-3" style={{ color: COLORS.text }}>ESG Risk Weight (β)</div>
-               <div className="flex items-center justify-between gap-4">
-                  <div className="flex-1">
-                     <div className="flex justify-between text-[9px] uppercase font-mono mb-1" style={{ color: COLORS.muted }}>
-                        <span>Pri Cost</span>
-                        <span style={{ color: COLORS.green }}>Pri Green</span>
-                     </div>
-                     <input type="range" min="0.5" max="3.0" step="0.1" value={beta} onChange={e => setBeta(parseFloat(e.target.value))}
-                            className="w-full h-1 bg-[#1e2d3d] rounded-lg appearance-none cursor-pointer accent-[#06b6d4]" />
-                  </div>
-                  <div className="font-mono font-bold text-lg text-right w-8" style={{ color: COLORS.teal }}>{beta.toFixed(1)}</div>
-               </div>
-             </div>
-          </div>
-       </div>
-    </div>
-  </div>
-);
-
-const OptimizeTab = ({ current, costData, beta, paretoData }) => (
-  <div className="flex flex-col h-full overflow-y-auto no-scrollbar p-6 space-y-6">
-    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-      <MetricCard title="DIESEL DISPATCH" value={current.decision?.diesel} color={current.decision?.diesel > 0 ? COLORS.yellow : COLORS.green} unit="MW" subtext="GENERATOR ARRAY" />
-      <MetricCard title="SHEDDING ACTIVE" value={current.decision?.shed} color={current.decision?.shed > 0 ? COLORS.red : COLORS.text} unit="MW" subtext="FORCED OUTAGES" />
-      <MetricCard title="OPEX PENALTY" value={`$${(current.flatDieselCost + current.flatShedCost)?.toFixed(0)}`} color={COLORS.red} unit="/hr" subtext="ACTIVE EXECUTIONS" />
-      <MetricCard title="MITIGATION STATUS" value={current.decision?.action} color={current.decision?.action === 'NOMINAL' ? COLORS.green : COLORS.yellow} highlight={current.decision?.action !== 'NOMINAL'} subtext="SYS INTEGRITY" />
-    </div>
-
-    <div className="flex gap-6 min-h-[360px]">
-       <div className="w-1/2 border rounded-sm flex flex-col p-5" style={{ backgroundColor: COLORS.panel, borderColor: COLORS.border }}>
-          <div className="flex justify-between items-center mb-0">
-             <div className="text-xs font-bold uppercase tracking-wider" style={{ color: COLORS.text }}>Cost vs CO2 Tradeoff (Pareto)</div>
-             <div className="font-mono text-[10px] px-2 py-1 rounded border" style={{ backgroundColor: COLORS.card, borderColor: COLORS.border, color: COLORS.teal }}>Active β = {beta.toFixed(1)}</div>
-          </div>
-          <div className="flex-1 w-full relative">
-             <ResponsiveContainer width="100%" height="100%">
-               <ScatterChart margin={{ top: 20, right: 10, bottom: 0, left: -20 }}>
-                 <CartesianGrid strokeDasharray="2 2" stroke={COLORS.border} />
-                 <XAxis dataKey="co2" type="number" stroke={COLORS.muted} tick={{fontSize: 10, fontFamily: 'Space Mono'}} name="CO2" unit=" t" />
-                 <YAxis dataKey="cost" type="number" stroke={COLORS.muted} tick={{fontSize: 10, fontFamily: 'Space Mono'}} name="Cost" unit=" $" />
-                 <Tooltip cursor={{strokeDasharray: '3 3'}} contentStyle={{backgroundColor: COLORS.card, borderColor: COLORS.border, fontSize: '11px', fontFamily: '"Space Mono", monospace'}} />
-                 <Scatter name="Pareto Front" data={paretoData}>
-                    {paretoData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.beta === beta ? COLORS.green : COLORS.blue} />
-                    ))}
-                 </Scatter>
-               </ScatterChart>
-             </ResponsiveContainer>
-          </div>
-       </div>
-
-       <div className="w-1/2 flex flex-col gap-6">
-          <div className="border flex flex-col rounded-sm p-0 flex-1" style={{ backgroundColor: COLORS.panel, borderColor: COLORS.border }}>
-             <div className="p-4 border-b text-[10px] font-bold uppercase tracking-wider flex justify-between" style={{ borderColor: COLORS.border, color: COLORS.text }}>
-                <span>MILP Dispatch Instruction</span>
-                <span style={{ color: COLORS.green }}>OPTIMAL</span>
-             </div>
-             <table className="w-full text-xs font-mono text-left m-0 border-collapse">
-               <thead className="uppercase" style={{ backgroundColor: COLORS.card, color: COLORS.muted }}>
-                 <tr className="border-b" style={{ borderColor: COLORS.border }}>
-                   <th className="py-2 px-4 font-normal">Asset</th>
-                   <th className="py-2 px-4 font-normal text-right">Instruction</th>
-                   <th className="py-2 px-4 font-normal text-right">Status</th>
-                 </tr>
-               </thead>
-               <tbody className="divide-y divide-slate-800" style={{ color: COLORS.text }}>
-                 <tr>
-                   <td className="py-3 px-4">Gen Array A-D</td>
-                   <td className="py-3 px-4 text-right text-yellow-400">{current.decision?.diesel?.toFixed(1) || 0} MW</td>
-                   <td className="py-3 px-4 text-right">
-                     <span className={`px-2 py-0.5 rounded text-[10px] ${current.decision?.diesel > 0 ? 'bg-yellow-900/30 text-yellow-400' : 'bg-slate-800 text-slate-500'}`}>
-                       {current.decision?.diesel > 0 ? 'DISPATCH' : 'IDLE'}
-                     </span>
-                   </td>
-                 </tr>
-                 <tr>
-                   <td className="py-3 px-4">Load Res. B</td>
-                   <td className="py-3 px-4 text-right">{-current.decision?.shed?.toFixed(1) || 0} MW</td>
-                   <td className="py-3 px-4 text-right">
-                     <span className={`px-2 py-0.5 rounded text-[10px] ${current.decision?.shed > 0 ? 'bg-red-900/40 text-red-400' : 'bg-emerald-900/30 text-emerald-400'}`}>
-                       {current.decision?.shed > 0 ? 'SHED' : 'ONLINE'}
-                     </span>
-                   </td>
-                 </tr>
-               </tbody>
-             </table>
-          </div>
-
-          <div className="border rounded-sm flex flex-col p-4 h-[120px]" style={{ backgroundColor: COLORS.card, borderColor: COLORS.border }}>
-             <div className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: COLORS.text }}>Decision Impact Distribution ($/hr)</div>
-             <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={costData} layout="vertical" margin={{ top: 0, right: 10, left: -20, bottom: 0 }}>
-                   <XAxis type="number" hide />
-                   <YAxis type="category" dataKey="name" stroke={COLORS.muted} tick={{fontSize: 10, fontFamily: 'Space Grotesk'}} width={80} axisLine={false} tickLine={false} />
-                   <Tooltip cursor={{fill: COLORS.border, opacity: 0.4}} contentStyle={{backgroundColor: '#000', borderColor: COLORS.border, fontSize:'10px'}} />
-                   <Bar dataKey="value" isAnimationActive={false} barSize={10} radius={[0,4,4,0]}>
-                      {costData.map((e, idx) => <Cell key={idx} fill={e.fill} />)}
-                   </Bar>
-                </BarChart>
-             </ResponsiveContainer>
-          </div>
-       </div>
-    </div>
-  </div>
-);
-
-const AuditTab = ({ history, current }) => (
-  <div className="flex flex-col h-full overflow-y-auto no-scrollbar p-6 space-y-6">
-    <div className="flex gap-6 h-[200px]">
-      <div className="w-1/3 border rounded-sm flex flex-col p-4" style={{ backgroundColor: COLORS.panel, borderColor: COLORS.border }}>
-         <div className="text-[10px] font-bold uppercase tracking-wider mb-4 flex justify-between" style={{ color: COLORS.text }}>
-            <span>Sensor Fabric Health</span>
-            <span style={{ color: COLORS.green }}>NOMINAL</span>
-         </div>
-         <div className="space-y-4">
-           {['SCADA LOAD', 'GRID METERS', 'SOLAR INV'].map(s => (
-              <div key={s} className="flex flex-col gap-1.5">
-                 <div className="flex justify-between font-mono text-[10px]" style={{ color: COLORS.muted }}>
-                    <span>{s}</span> <span>OK</span>
-                 </div>
-                 <div className="w-full h-1 bg-slate-800 rounded mx-0">
-                    <div className="h-full rounded" style={{ backgroundColor: COLORS.green, width: `${95 + Math.random()*5}%` }}></div>
-                 </div>
-              </div>
-           ))}
-         </div>
-      </div>
-
-      <div className="w-2/3 border rounded-sm flex flex-col p-4" style={{ backgroundColor: COLORS.card, borderColor: COLORS.border }}>
-         <div className="text-[10px] font-bold uppercase tracking-wider mb-3 flex justify-between" style={{ color: COLORS.text }}>
-           <span>Active Decision Reasoning</span>
-           <span className="font-mono text-[10px] bg-slate-800 px-2 rounded flex items-center" style={{ color: COLORS.teal }}>PHASE 2 - OPTIMAL</span>
-         </div>
-         <div className="font-mono text-xs leading-7 border-l-2 pl-4 flex-1 overflow-y-auto" style={{ borderColor: COLORS.teal, color: COLORS.text }}>
-             {current.forecast?.p90 > 0 ? (
-               <>
-                  <div className="text-[#f5a623]">{'>'} High P90 deficit risk detected ({current.forecast.p90.toFixed(1)} MW)</div>
-                  {current.decision?.shed > 0 && <div className="text-[#ff4d4d]">{'>'} ESG Cost threshold breached → {current.decision.shed.toFixed(1)} MW load shedding activated</div>}
-                  {current.decision?.diesel > 0 && <div>{'>'} Diesel arrays dispatched to cover remaining {current.decision.diesel.toFixed(1)} MW reserve</div>}
-                  <div className="text-[#64748b]">{'>'} Action executed to prevent unmitigated grid outage</div>
-               </>
-             ) : (
-               <>
-                  <div className="text-[#00d97e]">{'>'} Grid and Renewables fully supply requested load</div>
-                  <div className="text-[#64748b]">{'>'} No reserves dispatched. P90 gap perfectly covered.</div>
-               </>
-             )}
-         </div>
-      </div>
-    </div>
-
-    <div className="flex-1 border rounded-sm flex flex-col overflow-hidden" style={{ backgroundColor: COLORS.panel, borderColor: COLORS.border }}>
-       <div className="p-4 border-b text-[10px] font-bold uppercase tracking-wider" style={{ borderColor: COLORS.border, color: COLORS.text }}>Historical Audit Ledger</div>
-       <div className="overflow-y-auto flex-1 p-0 m-0">
-         <table className="w-full text-[10px] font-mono text-left m-0">
-           <thead className="sticky top-0 shadow" style={{ backgroundColor: COLORS.card, color: COLORS.muted }}>
-             <tr>
-               <th className="py-2 px-6 font-normal uppercase">Timestamp</th>
-               <th className="py-2 px-6 font-normal uppercase text-right">P90 Deficit</th>
-               <th className="py-2 px-6 font-normal uppercase text-right">Action State</th>
-               <th className="py-2 px-6 font-normal uppercase text-right">Shed MW</th>
-               <th className="py-2 px-6 font-normal uppercase text-right">Diesel MW</th>
-             </tr>
-           </thead>
-           <tbody className="divide-y divide-slate-800/50" style={{ color: COLORS.muted }}>
-             {[...history].reverse().map((h, i) => (
-               <tr key={i} className={`hover:bg-slate-800/30 ${i===0 ? 'text-white' : ''}`}>
-                 <td className="py-3 px-6">{h.timeStr}</td>
-                 <td className="py-3 px-6 text-right font-bold text-yellow-400">{(h.flatP90||0).toFixed(1)}</td>
-                 <td className="py-3 px-6 text-right">{(h.decision?.action||'NOMINAL')}</td>
-                 <td className="py-3 px-6 text-right text-red-400">{(h.decision?.shed||0).toFixed(1)}</td>
-                 <td className="py-3 px-6 text-right text-teal-400">{(h.decision?.diesel||0).toFixed(1)}</td>
-               </tr>
-             ))}
-           </tbody>
-         </table>
-       </div>
-    </div>
-  </div>
-);
-
-// --- MAIN APP COMPONENT ---
-
 export default function App() {
-  const [activeTab, setActiveTab] = useState('Overview');
   const [history, setHistory] = useState([]);
-  const [scenario, setScenario] = useState('normal');
-  const [beta, setBeta] = useState(1.5);
-  const [currentTime, setCurrentTime] = useState(new Date());
+  const [current, setCurrent] = useState(null);
+  const [scenario, setScenario] = useState("normal");
+  const [beta, setBeta] = useState(1.0);
+  const [speed, setSpeed] = useState(1);
+  const [activeTab, setActiveTab] = useState("command");
+  const [paused, setPaused] = useState(false);
+  const intervalRef = useRef(null);
 
-  const generatePoint = useCallback((time, currScenario, currBeta) => {
-    // Exact schema matching user request: plant, forecast, decision, risk
-    const simTime = time.getTime() / 1000;
-    const hour = (simTime / 120) % 24; 
-    
-    let load = 450 + 100 * Math.sin((hour - 8) * Math.PI / 12);
-    if (currScenario === 'demand_spike') load *= 1.35;
-
-    let solar = Math.max(0, 180 * Math.sin((hour - 6) * Math.PI / 12));
-    let wind = 60 + 30 * Math.sin(hour * Math.PI / 6);
-    let renewable = solar + wind;
-    let confidence = 0.98;
-    
-    if (currScenario === 'renewable_drop') {
-      renewable *= 0.3;
-      confidence = 0.85;
-    }
-
-    const grid = Math.min(load - renewable, 350);
-    const deficitRaw = load - renewable - 350;
-    const p50 = Math.max(0, deficitRaw);
-    const p90 = p50 === 0 ? 0 : p50 * (1.10 + (1 - confidence)) + 5;
-
-    let toCover = p90;
-    const dieselUnitCost = 150 + currBeta * 0.9 * 90;
-    let shedMW = 0, dieselMW = 0;
-    
-    if (toCover > 0) {
-      if (dieselUnitCost > 200) { shedMW = Math.min(toCover, 50); toCover -= shedMW; }
-      dieselMW = toCover;
-    }
-    
-    let action = 'NOMINAL';
-    let riskLvl = 'NORMAL';
-    if (p90 > 50) { action = 'MITIGATION'; riskLvl = 'CRITICAL'; }
-    else if (p90 > 0) { action = 'ACTIVE RSV'; riskLvl = 'WARNING'; }
-
-    return {
-      timestamp: time,
-      timeStr: time.toLocaleTimeString('en-US', { hour12: false }),
-      plant: { load, renewable, grid },
-      forecast: { p50, p90, confidence },
-      decision: { diesel: dieselMW, shed: shedMW, action },
-      risk: { level: riskLvl, gap: p90 - p50 },
-      flatLoad: load, flatRenewable: renewable, flatGrid: grid, flatDeficit: p50,
-      flatP50: p50, flatP90: p90,
-      flatDieselCost: dieselMW * 150, flatShedCost: shedMW > 0 ? 3000 : 0
-    };
-  }, []);
+  const tick = useCallback(() => {
+    if (paused) return;
+    const next = generateTick(scenario, beta);
+    setCurrent(next);
+    setHistory(h => {
+      const n = [...h, next];
+      return n.length > HISTORY ? n.slice(-HISTORY) : n;
+    });
+  }, [paused, scenario, beta]);
 
   useEffect(() => {
-    let t = new Date();
-    t.setMinutes(t.getMinutes() - 5);
-    const initHist = [];
-    for (let i = 0; i < 40; i++) {
-       t = new Date(t.getTime() + 2000);
-       initHist.push(generatePoint(t, 'normal', 1.5));
-    }
-    setCurrentTime(t);
-    setHistory(initHist);
-  }, [generatePoint]);
+    clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(tick, 2000 / speed);
+    return () => clearInterval(intervalRef.current);
+  }, [tick, speed]);
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setCurrentTime(prev => {
-        const nextTime = new Date(prev.getTime() + 2000);
-        setHistory(h => {
-          const newHist = [...h, generatePoint(nextTime, scenario, beta)];
-          if (newHist.length > 40) newHist.shift();
-          return newHist;
-        });
-        return nextTime;
-      });
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [scenario, beta, generatePoint]);
+  const cur = current;
+  if (!cur) return <div style={{ background: C.bg, height: "100vh" }} />;
 
-  const current = history.length > 0 ? history[history.length - 1] : {
-     plant: {load: 0, renewable: 0, grid: 0},
-     forecast: {p50: 0, p90: 0, confidence: 1},
-     decision: {diesel: 0, shed: 0, action: '...'},
-     risk: {level: 'NONE', gap: 0}
-  };
-
-  const showAlert = current.forecast.p90 > 20 || current.decision.shed > 0;
-  const alertMsg = current.decision.shed > 0 ? `Load Shedding Active (${current.decision.shed.toFixed(1)} MW)` : `High P90 Risk Threshold (${current.forecast.p90.toFixed(1)} MW)`;
-
-  // Derived Data for Optimization
-  const costData = [
-    { name: 'Diesel Fuel', value: current.flatDieselCost || 0, fill: COLORS.blue },
-    { name: 'HVAC Shed', value: current.flatShedCost || 0, fill: COLORS.red }
+  const riskColor = cur.riskLvl === "HIGH" ? C.red : cur.riskLvl === "MED" ? C.amber : C.green;
+  const NAV = [
+    { id: "command", label: "CMD CTR" },
+    { id: "risk", label: "RISK" },
+    { id: "sim", label: "SIM" },
+    { id: "audit", label: "AUDIT" }
   ];
 
-  const paretoData = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0].map(b => {
-     let toCover = current.forecast.p90 || 0;
-     const dCost = 150 + b * 0.9 * 90;
-     let s = false;
-     if (toCover > 0 && dCost > 200) { s = true; toCover = Math.max(0, toCover - 50); }
-     const cost = toCover * 150 + (s?3000:0) + ((current.forecast.p90 || 0) * 80);
-     const co2 = toCover * 0.9 + 2; 
-     return { beta: b, cost, co2: parseFloat(co2.toFixed(1)) };
-  });
-
-  const tabs = ['Overview', 'Forecasting', 'Optimization', 'Audit Log'];
-
   return (
-    <div className="h-screen w-screen flex flex-col font-sans overflow-hidden" style={{ backgroundColor: COLORS.bg, color: COLORS.text }}>
-      <Header time={currentTime} />
-      <AlertBanner show={showAlert} message={alertMsg} />
+    <div style={{ background: C.bg, color: C.text, fontFamily: "'IBM Plex Mono','Courier New',monospace", height: "100vh", display: "flex", flexDirection: "column", fontSize: 12, userSelect: "none", overflow: "hidden" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0 }
+        ::-webkit-scrollbar { width: 4px }
+        ::-webkit-scrollbar-track { background: ${C.bg1} }
+        ::-webkit-scrollbar-thumb { background: ${C.border2}; border-radius: 2px }
+        @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .4 } }
+      `}</style>
       
-      <div className="flex flex-1 overflow-hidden relative">
-         {/* Sidebar */}
-         <div className="w-56 flex flex-col border-r z-10" style={{ backgroundColor: COLORS.panel, borderColor: COLORS.border }}>
-            <div className="flex-1 py-4 flex flex-col gap-1">
-               {tabs.map(t => (
-                  <button key={t} onClick={() => setActiveTab(t)}
-                          style={{
-                             backgroundColor: activeTab === t ? COLORS.card : 'transparent',
-                             color: activeTab === t ? COLORS.text : COLORS.muted,
-                             borderRight: activeTab === t ? `3px solid ${COLORS.teal}` : '3px solid transparent'
-                          }}
-                          className="px-6 py-4 font-semibold text-[11px] tracking-wider uppercase text-left transition m-0 focus:outline-none">
-                     {t}
-                  </button>
-               ))}
-            </div>
-            <div className="p-4 border-t text-[9px] text-center font-mono opacity-50 uppercase" style={{ borderColor: COLORS.border }}>
-               Industrial Interface
-            </div>
-         </div>
+      {/* Header */}
+      <div style={{ background: C.bg1, borderBottom: `1px solid ${C.border}`, padding: "0 16px", height: 50, display: "flex", alignItems: "center", gap: 20, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ width: 32, height: 32, border: `2px solid ${C.teal}`, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", background: C.tealD }}>
+            <span style={{ fontSize: 16, color: C.teal, fontWeight: 700 }}>⚡</span>
+          </div>
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: C.teal, letterSpacing: 4, lineHeight: 1 }}>APEX</div>
+            <div style={{ fontSize: 9, color: C.textDim, letterSpacing: 2, marginTop: 2 }}>AI ENERGY DISPATCHER v2.1</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 4, marginLeft: 12 }}>
+          {NAV.map(n => (
+            <button key={n.id} onClick={() => setActiveTab(n.id)} style={{
+              background: activeTab === n.id ? C.tealD : "transparent",
+              border: `1px solid ${activeTab === n.id ? C.teal + "66" : C.border}`,
+              color: activeTab === n.id ? C.teal : C.textDim,
+              borderRadius: 4, padding: "4px 12px", fontSize: 10, fontFamily: "monospace", letterSpacing: 1, cursor: "pointer", fontWeight: activeTab === n.id ? 700 : 400, transition: "all 0.2s"
+            }}>
+              {n.label}
+            </button>
+          ))}
+        </div>
+        <div style={{ flex: 1 }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <Blink active color={riskColor} />
+            <Badge label={cur.riskLvl} color={riskColor} />
+          </div>
+          <div style={{ fontSize: 9, color: C.textDim }}>{cur.ts}</div>
+          <button onClick={() => setPaused(p => !p)} style={{
+            background: paused ? C.amberD : "transparent", border: `1px solid ${paused ? C.amber : C.border}`,
+            color: paused ? C.amber : C.textDim, borderRadius: 4, padding: "2px 8px", fontSize: 9, fontFamily: "monospace", letterSpacing: 1, cursor: "pointer"
+          }}>
+            {paused ? "▶ RESUME" : "⏸ PAUSE"}
+          </button>
+        </div>
+      </div>
 
-         {/* Content Viewport */}
-         <div className="flex-1 overflow-hidden h-full">
-            {activeTab === 'Overview' && <OverviewTab history={history} current={current} />}
-            {activeTab === 'Forecasting' && <ForecastTab history={history} current={current} scenario={scenario} setScenario={setScenario} beta={beta} setBeta={setBeta} />}
-            {activeTab === 'Optimization' && <OptimizeTab current={current} costData={costData} beta={beta} paretoData={paretoData} />}
-            {activeTab === 'Audit Log' && <AuditTab history={history} current={current} />}
-         </div>
+      {/* Main Area */}
+      <div style={{ flex: 1, padding: "8px", display: "flex", flexDirection: "column", gap: 8, overflow: "hidden" }}>
+        
+        {activeTab === "command" && (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 8, flexShrink: 0 }}>
+              <Panel title="TOTAL LOAD" accent={C.blue}><Metric label="LOAD" value={cur.load} unit="MW" color={C.blue} size={22} /></Panel>
+              <Panel title="RENEWABLE" accent={C.green}><Metric label="SOLAR+WIND" value={cur.renewable} unit="MW" color={C.green} size={22} /></Panel>
+              <Panel title="GRID SUPPLY" accent={C.amber}><Metric label="GRID IMPORT" value={cur.gridSupply} unit="MW" color={C.amber} size={22} /></Panel>
+              <Panel title="CURRENT DEFICIT" accent={cur.deficit > 0 ? C.red : C.teal} style={{ background: cur.deficit > 0 ? C.redD : C.bg2 }}><Metric label="DEFICIT" value={cur.deficit} unit="MW" color={cur.deficit > 0 ? C.red : C.teal} size={22} /></Panel>
+              <Panel title="TOTAL LOSS" accent={C.purple}><Metric label="TOTAL $/HR" value={cur.totalLoss.toLocaleString()} unit="" color={C.purple} size={22} /></Panel>
+              <Panel title="CO₂ EMISSIONS" accent={C.teal}><Metric label="TONS/HR" value={cur.co2} unit="t" color={C.teal} size={22} /></Panel>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 8, flex: 1, overflow: "hidden" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <Panel title="POWER FLOW OVERVIEW" accent={C.teal} style={{ flex: 1 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={history} margin={{ top: 10, right: 10, bottom: 0, left: -20 }}>
+                      <defs>
+                        <linearGradient id="gload" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.blue} stopOpacity={.25} /><stop offset="95%" stopColor={C.blue} stopOpacity={.02} /></linearGradient>
+                        <linearGradient id="grenewable" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.green} stopOpacity={.25} /><stop offset="95%" stopColor={C.green} stopOpacity={.02} /></linearGradient>
+                      </defs>
+                      <CartesianGrid stroke={C.border} strokeDasharray="2 4" />
+                      <XAxis dataKey="ts" tick={{ fill: C.textDim, fontSize: 8 }} interval={9} />
+                      <YAxis tick={{ fill: C.textDim, fontSize: 8 }} />
+                      <Tooltip content={<TT />} />
+                      <Area type="monotone" dataKey="load" name="Load" stroke={C.blue} fill="url(#gload)" strokeWidth={2} dot={false} />
+                      <Area type="monotone" dataKey="renewable" name="Renewable" stroke={C.green} fill="url(#grenewable)" strokeWidth={2} dot={false} />
+                      <Area type="monotone" dataKey="deficit" name="Deficit" stroke={C.red} fill="none" strokeWidth={2} strokeDasharray="4 2" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </Panel>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, height: 160 }}>
+                  <Panel title="COST BREAKDOWN" accent={C.purple}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={[{ name: "Diesel", v: cur.dFuel, c: C.blue }, { name: "Shedding", v: cur.sheddingCost, c: C.amber }, { name: "ESG", v: cur.esgPenalty, c: C.teal }]}>
+                        <CartesianGrid stroke={C.border} strokeDasharray="2 4" vertical={false} />
+                        <XAxis dataKey="name" tick={{ fill: C.textDim, fontSize: 8 }} />
+                        <YAxis tick={{ fill: C.textDim, fontSize: 8 }} />
+                        <Tooltip content={<TT />} />
+                        <Bar dataKey="v" name="$/hr" radius={[2, 2, 0, 0]}>{[C.blue, C.amber, C.teal].map((c, i) => <Cell key={i} fill={c} fillOpacity={.8} />)}</Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </Panel>
+                  <Panel title="PARETO SCATTER" accent={C.green}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ScatterChart margin={{ top: 10, right: 10, bottom: 0, left: -20 }}>
+                        <CartesianGrid stroke={C.border} strokeDasharray="2 4" />
+                        <XAxis dataKey="co2" name="CO₂" type="number" tick={{ fill: C.textDim, fontSize: 8 }} />
+                        <YAxis dataKey="opCost" name="Cost" type="number" tick={{ fill: C.textDim, fontSize: 8 }} />
+                        <Tooltip cursor={{ stroke: C.border2 }} content={<TT />} />
+                        <Scatter data={history} fill={C.green} fillOpacity={.6} />
+                      </ScatterChart>
+                    </ResponsiveContainer>
+                  </Panel>
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <Panel title="DECISION CONTROLS" accent={C.teal}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontSize: 9, color: C.textDim }}>SCENARIO:</div>
+                    {[["normal", "NORMAL"], ["res_drop", "RES DROP"], ["demand_spike", "SPIKE"]].map(([k, v]) => (
+                      <button key={k} onClick={() => setScenario(k)} style={{
+                        background: scenario === k ? C.tealD : "transparent", border: `1px solid ${scenario === k ? C.teal : C.border}`,
+                        color: scenario === k ? C.teal : C.textDim, borderRadius: 3, padding: "4px 8px", fontSize: 9, fontFamily: "monospace", cursor: "pointer", transition: "0.2s"
+                      }}>{v}</button>
+                    ))}
+                    <div style={{ marginTop: 4 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: C.textDim, marginBottom: 4 }}>
+                        <span>ESG β:</span><span>{beta.toFixed(2)}</span>
+                      </div>
+                      <input type="range" min={0.5} max={3.0} step={0.1} value={beta} onChange={e => setBeta(+e.target.value)} style={{ width: "100%", accentColor: C.purple, cursor: "pointer" }} />
+                    </div>
+                  </div>
+                </Panel>
+                <Panel title="SHEDDING STATUS" accent={C.red} badge={<Badge label={`${(cur.hvac+cur.pump+cur.rolling).toFixed(1)} MW`} color={C.red}/>}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {[["HVAC", cur.hvac, 20], ["PUMP", cur.pump, 30], ["ROLLING", cur.rolling, 40], ["DIESEL", cur.diesel, 90]].map(([l, v, m]) => (
+                      <div key={l}>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, marginBottom: 2 }}>
+                          <span style={{ color: C.textDim }}>{l}</span>
+                          <span style={{ color: v > 0 ? C.red : C.textDim, fontWeight: 700 }}>{v.toFixed(1)} / {m} MW</span>
+                        </div>
+                        <div style={{ height: 4, background: C.border, borderRadius: 2 }}><div style={{ height: "100%", background: v > 0 ? (l === "DIESEL" ? C.blue : C.red) : C.border, width: `${(v / m) * 100}%`, borderRadius: 2 }} /></div>
+                      </div>
+                    ))}
+                  </div>
+                </Panel>
+                <Panel title="EXPLAINER" accent={C.green} style={{ flex: 1 }}>
+                  <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.6, height: "100%", display: "flex", alignItems: "center" }}>{cur.explainer}</div>
+                </Panel>
+              </div>
+            </div>
+          </>
+        )}
+
+        {activeTab === "risk" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 8, flex: 1 }}>
+            <Panel title="P90 RISK BOUNDS" accent={C.red}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={history} margin={{ top: 10, right: 10, bottom: 0, left: -20 }}>
+                  <CartesianGrid stroke={C.border} strokeDasharray="2 4" />
+                  <XAxis dataKey="ts" tick={{ fill: C.textDim, fontSize: 8 }} interval={9} />
+                  <YAxis tick={{ fill: C.textDim, fontSize: 8 }} />
+                  <Tooltip content={<TT />} />
+                  <Line type="monotone" dataKey="p90" name="P90 Risk" stroke={C.amber} strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="p50" name="P50 Mean" stroke={C.teal} strokeWidth={1.5} strokeDasharray="4 2" dot={false} />
+                  <Line type="monotone" dataKey="deficit" name="Actual Deficit" stroke={C.red} strokeWidth={1} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </Panel>
+            <Panel title="SENSOR CONFIDENCE (w)" accent={C.teal}>
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={history} margin={{ top: 10, right: 10, bottom: 0, left: -20 }}>
+                  <CartesianGrid stroke={C.border} strokeDasharray="2 4" />
+                  <XAxis dataKey="ts" tick={{ fill: C.textDim, fontSize: 8 }} interval={9} />
+                  <YAxis domain={[0, 1]} tick={{ fill: C.textDim, fontSize: 8 }} />
+                  <Tooltip content={<TT />} />
+                  <Area type="monotone" dataKey="w" name="ConfidenceScore" stroke={C.teal} fill={C.tealD} strokeWidth={2} dot={false} />
+                  <ReferenceLine y={0.6} stroke={C.red} strokeDasharray="3 3" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </Panel>
+            <Panel title="RISK DENSITY SCAN" accent={C.purple}>
+              <ResponsiveContainer width="100%" height="100%">
+                <ScatterChart margin={{ top: 10, right: 10, bottom: 0, left: -20 }}>
+                  <CartesianGrid stroke={C.border} strokeDasharray="2 4" />
+                  <XAxis dataKey="deficit" name="Deficit" type="number" tick={{ fill: C.textDim, fontSize: 8 }} />
+                  <YAxis dataKey="spread" name="Spread" type="number" tick={{ fill: C.textDim, fontSize: 8 }} />
+                  <Tooltip content={<TT />} />
+                  <Scatter data={history} fill={C.purple} fillOpacity={0.5} />
+                </ScatterChart>
+              </ResponsiveContainer>
+            </Panel>
+            <Panel title="GRID FREQUENCY STABILITY" accent={C.blue}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={history} margin={{ top: 10, right: 10, bottom: 0, left: -20 }}>
+                  <CartesianGrid stroke={C.border} strokeDasharray="2 4" />
+                  <XAxis dataKey="ts" tick={{ fill: C.textDim, fontSize: 8 }} interval={9} />
+                  <YAxis domain={[49, 51]} tick={{ fill: C.textDim, fontSize: 8 }} />
+                  <Tooltip content={<TT />} />
+                  <Line type="monotone" dataKey="freq" name="Freq (Hz)" stroke={C.blue} strokeWidth={2} dot={false} />
+                  <ReferenceLine y={50} stroke={C.green} strokeDasharray="3 3" />
+                </LineChart>
+              </ResponsiveContainer>
+            </Panel>
+          </div>
+        )}
+
+        {activeTab === "sim" && (
+          <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 8, flex: 1 }}>
+            <Panel title="SIMULATION OVERRIDES" accent={C.amber}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div style={{ background: C.bg3, padding: 8, borderRadius: 4 }}>
+                  <div style={{ fontSize: 9, color: C.textDim, marginBottom: 4 }}>SIMULATION SPEED</div>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    {[1, 5, 20].map(s => (
+                      <button key={s} onClick={() => setSpeed(s)} style={{
+                        flex: 1, background: speed === s ? C.amberD : "transparent", border: `1px solid ${speed === s ? C.amber : C.border}`,
+                        color: speed === s ? C.amber : C.textDim, padding: "4px", fontSize: 10, borderRadius: 3, cursor: "pointer"
+                      }}>{s}X</button>
+                    ))}
+                  </div>
+                </div>
+                <div style={{ background: C.bg3, padding: 8, borderRadius: 4, flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ fontSize: 9, color: C.textDim }}>LOSS FUNCTION VARIABLES</div>
+                  <Metric label="BETA WEIGHT" value={beta.toFixed(2)} color={C.purple} size={20} />
+                  <Metric label="FUEL PRICE" value="150" unit="$/MWh" size={16} />
+                  <Metric label="CO2 TAX" value="90" unit="$/ton" size={16} />
+                  <div style={{ flex: 1 }} />
+                  <div style={{ fontSize: 8, color: C.textDim, fontStyle: "italic" }}>
+                    Loss = OpCost(p,h) + β × Penalty(p)<br/>
+                    Minimizing across multi-tier constraints.
+                  </div>
+                </div>
+              </div>
+            </Panel>
+            <Panel title="PARETO FRONTIER: COST VS ESG" accent={C.green}>
+              <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+                <div style={{ flex: 1 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 10 }}>
+                      <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
+                      <XAxis type="number" dataKey="co2" name="CO₂ Emissions (tons/hr)" label={{ value: 'CO₂ t/hr', position: 'bottom', fill: C.textDim, fontSize: 10 }} tick={{ fill: C.textDim, fontSize: 9 }} />
+                      <YAxis type="number" dataKey="opCost" name="Total Cost ($/hr)" label={{ value: 'Cost $/hr', angle: -90, position: 'left', fill: C.textDim, fontSize: 10 }} tick={{ fill: C.textDim, fontSize: 9 }} />
+                      <Tooltip cursor={{ strokeDasharray: '3 3' }} content={<TT />} />
+                      <Scatter data={history} fill={C.green} fillOpacity={0.6}>
+                        {history.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.totalLoss > entry.base ? C.red : C.green} />
+                        ))}
+                      </Scatter>
+                    </ScatterChart>
+                  </ResponsiveContainer>
+                </div>
+                <div style={{ height: 40, borderTop: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: C.textDim }}>
+                   β-ADAPTIVE OPTIMAL SURFACE MAP · REAL-TIME MILP UPDATES
+                </div>
+              </div>
+            </Panel>
+          </div>
+        )}
+
+        {activeTab === "audit" && (
+          <Panel title="DECISION AUDIT CHAIN" accent={C.green} style={{ flex: 1 }}>
+            <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
+                <Panel title="LSTM LATENCY" style={{ padding: 6, background: C.bg3 }}><Metric value={cur.latencyLstm} unit="ms" size={16} /></Panel>
+                <Panel title="MILP SOLVE TIME" style={{ padding: 6, background: C.bg3 }}><Metric value={cur.latencyMilp} unit="ms" size={16} /></Panel>
+                <Panel title="AUDIT RECORDS" style={{ padding: 6, background: C.bg3 }}><Metric value={history.length} unit="pts" size={16} /></Panel>
+              </div>
+              <div style={{ flex: 1, overflow: "auto", border: `1px solid ${C.border}`, borderRadius: 4 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9, fontFamily: "monospace" }}>
+                  <thead style={{ position: "sticky", top: 0, background: C.bg2, color: C.textDim, borderBottom: `1px solid ${C.border}` }}>
+                    <tr>
+                      <th style={{ padding: "4px 8px", textAlign: "left" }}>T-STAMP</th>
+                      <th style={{ padding: "4px 8px", textAlign: "right" }}>DEFICIT</th>
+                      <th style={{ padding: "4px 8px", textAlign: "right" }}>DIESEL</th>
+                      <th style={{ padding: "4px 8px", textAlign: "right" }}>SHED</th>
+                      <th style={{ padding: "4px 8px", textAlign: "right" }}>β</th>
+                      <th style={{ padding: "4px 8px", textAlign: "right" }}>SAVINGS</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...history].reverse().map((h, i) => (
+                      <tr key={h.t} style={{ borderBottom: `1px solid ${C.border}`, background: i % 2 === 0 ? "transparent" : C.bg1 }}>
+                        <td style={{ padding: "3px 8px" }}>{h.ts}</td>
+                        <td style={{ padding: "3px 8px", textAlign: "right", color: h.deficit > 0 ? C.red : C.teal }}>{h.deficit}</td>
+                        <td style={{ padding: "3px 8px", textAlign: "right", color: C.blue }}>{h.diesel}</td>
+                        <td style={{ padding: "3px 8px", textAlign: "right", color: C.amber }}>{(h.hvac+h.pump+h.rolling).toFixed(1)}</td>
+                        <td style={{ padding: "3px 8px", textAlign: "right" }}>{beta.toFixed(2)}</td>
+                        <td style={{ padding: "3px 8px", textAlign: "right", color: C.green }}>{h.savings}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </Panel>
+        )}
+
+      </div>
+
+      {/* Footer */}
+      <div style={{ background: C.bg1, borderTop: `1px solid ${C.border}`, padding: "4px 16px", display: "flex", alignItems: "center", gap: 16, height: 24, flexShrink: 0 }}>
+        <span style={{ fontSize: 8, color: C.textDim, letterSpacing: 1 }}>APEX INDUSTRIAL DECISION SYSTEM</span>
+        <span style={{ fontSize: 8, color: C.border2 }}>|</span>
+        <span style={{ fontSize: 8, color: C.textDim }}>MODE: <span style={{ color: C.teal }}>{scenario.toUpperCase()}</span></span>
+        <span style={{ fontSize: 8, color: C.border2 }}>|</span>
+        <span style={{ fontSize: 8, color: C.textDim }}>β: <span style={{ color: C.purple }}>{beta.toFixed(1)}</span></span>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 8, color: C.textDim }}>MILP + LSTM INTEGRATION · STABLE · ENERGY-O-THON 2026</span>
       </div>
     </div>
   );
