@@ -13,8 +13,8 @@ dist/
 build/
 
 # ML models and large data
-models/*.pt
-models/*.joblib
+# models/*.pt
+# models/*.joblib
 data/
 
 # OS/IDE specific
